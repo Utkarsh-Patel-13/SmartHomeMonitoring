@@ -46,6 +46,10 @@ bool showThresholds = false;
 unsigned long lastButtonPress = 0;
 const unsigned long DEBOUNCE_TIME = 200;
 int touchedPins = 0;
+volatile bool shouldRotate = false;
+volatile int currentPosition = 0;
+const int STEP_SIZE = 5;
+const int ROTATION_DELAY = 20;
 
 // WiFi credentials
 const char *ssid = "";
@@ -55,6 +59,55 @@ const char *password = "";
 const char *serverUrl = "";
 const char *settingsUrl = "";
 const char *modeUrl = "";
+
+// Task handles
+TaskHandle_t motorControlTask = NULL;
+
+// Mutex for shared variables
+portMUX_TYPE motorMux = portMUX_INITIALIZER_UNLOCKED;
+
+/**
+ * Motor control task function
+ * Runs independently on core 0
+ * Handles continuous motor rotation when temperature is above threshold
+ */
+void motorControlLoop(void *parameter)
+{
+  while (true)
+  {
+    portENTER_CRITICAL(&motorMux);
+    bool shouldSpin = shouldRotate;
+    portEXIT_CRITICAL(&motorMux);
+
+    if (shouldSpin)
+    {
+      // Update position
+      currentPosition = (currentPosition + STEP_SIZE) % 180;
+
+      // Move servo to new position
+      servo.write(currentPosition);
+
+      // Small delay for smooth movement
+      vTaskDelay(pdMS_TO_TICKS(ROTATION_DELAY));
+    }
+    else
+    {
+      // Return to home position (0 degrees) when not rotating
+      if (currentPosition != 0)
+      {
+        // Gradually return to 0
+        currentPosition = max(0, currentPosition - STEP_SIZE);
+        servo.write(currentPosition);
+        vTaskDelay(pdMS_TO_TICKS(ROTATION_DELAY));
+      }
+      else
+      {
+        // If at home position, just wait
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+    }
+  }
+}
 
 void setup()
 {
@@ -78,6 +131,15 @@ void setup()
   // Servo
   servo.attach(SERVO_PIN);
   servo.write(0);
+
+  xTaskCreatePinnedToCore(
+      motorControlLoop,
+      "MotorControl",
+      10000,
+      NULL,
+      1,
+      &motorControlTask,
+      0);
 
   delay(1000);
   Serial.println("Smart Home Monitor initialized");
@@ -120,24 +182,9 @@ void handleLighting()
  */
 void handleTemperatureControl(float temperature)
 {
-  if (temperature > TEMP_THRESHOLD)
-  {
-    if (!isRotating)
-    {
-      isRotating = true;
-    }
-  }
-  else if (temperature <= TEMP_THRESHOLD)
-  {
-    isRotating = false;
-    servo.writeMicroseconds(1500);
-    return;
-  }
-
-  if (isRotating)
-  {
-    servo.writeMicroseconds(2000);
-  }
+  portENTER_CRITICAL(&motorMux);
+  shouldRotate = (temperature > TEMP_THRESHOLD);
+  portEXIT_CRITICAL(&motorMux);
 }
 
 /**
@@ -472,7 +519,6 @@ void updateSystemSettings()
 void loop()
 {
   updateSystemSettings();
-
   readAndDisplaySensors();
 
   switch (currentMode)
@@ -487,12 +533,16 @@ void loop()
     break;
 
   case MODE_MANUAL:
+    portENTER_CRITICAL(&motorMux);
+    shouldRotate = false;
+    portEXIT_CRITICAL(&motorMux);
     break;
 
   case MODE_OFF:
     digitalWrite(LED_PIN, LOW);
-    servo.writeMicroseconds(1500);
-    isRotating = false;
+    portENTER_CRITICAL(&motorMux);
+    shouldRotate = false;
+    portEXIT_CRITICAL(&motorMux);
     break;
   }
 
