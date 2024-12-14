@@ -1,0 +1,4 @@
+.pio
+.vscode
+.env
+node_modules
