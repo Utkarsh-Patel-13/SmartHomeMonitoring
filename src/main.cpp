@@ -48,8 +48,8 @@ const unsigned long DEBOUNCE_TIME = 200;
 int touchedPins = 0;
 
 // WiFi credentials
-const char *ssid = "SETUP-3CDC";
-const char *password = "effect5824being";
+const char *ssid = "";
+const char *password = "";
 
 // API endpoints
 const char *serverUrl = "";
